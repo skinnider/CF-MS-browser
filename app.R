@@ -5,9 +5,11 @@ library(magrittr)
 library(shinythemes)
 
 # read all chromatograms
-tidy = readRDS('/Users/michaelskinnider/git/CF-MS-browser/data/tidy_chromatograms.rds')
+# tidy = readRDS('~/git/CF-MS-browser/data/tidy_chromatograms.rds')
 # read identifier choices
 identifiers = readRDS('~/git/CF-MS-browser/data/identifier_choices.rds')
+# read experiment choices
+expts = readRDS('~/git/CF-MS-browser/data/experiment_choices.rds')
 # read identifier map
 idmap = readRDS('~/git/CF-MS-browser/data/identifier_map.rds')
 
@@ -41,25 +43,54 @@ server = function(input, output, session) {
   #   return(choices)
   # })
   output$choose_values = renderUI({
-    choices = filter(idmap, identifier == input$identifier) %>%
-      pull(id) %>%
-      unique() %>%
-      sort()
-    ## special characters at the end
-    a_idx = dplyr::first(which(startsWith(choices, 'A')))
-    if (!is.na(a_idx)) {
-      special = choices[1:(a_idx - 1)]
-      choices = c(choices[a_idx:length(choices)], special)
-    }
+    suppressWarnings({
+      # read the idmap
+      accession = gsub(": .*$", "", input$experiment)
+      replicate = gsub("^.*: ", "", input$experiment)
+      idmap = readRDS(paste0("data/idmaps/", accession, "-", replicate, ".rds"))
+      
+      if (is.null(input$identifier))
+        return(character(0))
+      
+      choices = filter(idmap, identifier == input$identifier) %>%
+        pull(id) %>%
+        unique() %>%
+        sort()
+      ## special characters at the end
+      a_idx = dplyr::first(which(startsWith(choices, 'A')))
+      if (!is.na(a_idx)) {
+        special = choices[1:(a_idx - 1)]
+        choices = c(choices[a_idx:length(choices)], special)
+      }
+      
+      selectizeInput(
+        inputId = 'values', 
+        label = 'Protein(s)', 
+        choices = choices,
+        multiple = TRUE,
+        selected = intersect(c('PSMA1', 'PSMA2', 'PSMA3'),
+                             choices),
+        options = list(maxOptions = 10))
+    })
+  })
+  
+  output$choose_identifier = renderUI({
+    # read the idmap
+    accession = gsub(": .*$", "", input$experiment)
+    replicate = gsub("^.*: ", "", input$experiment)
+    idmap = readRDS(paste0("data/idmaps/", accession, "-", replicate, ".rds"))
+    choices = unique(idmap$identifier)
+    # gene name, then alphabetically, then eggNOGs
+    choices = c('Gene name',
+                sort(choices[!grepl("eggNOG", choices)]),
+                sort(choices[grepl("eggNOG", choices)])) %>%
+      intersect(choices)
     
-    selectizeInput(
-      inputId = 'values', 
-      label = 'Protein(s)', 
+    selectInput(
+      inputId = 'identifier',
+      label = 'Identifiers',
       choices = choices,
-      multiple = TRUE,
-      selected = intersect(c('PSMA1', 'PSMA2', 'PSMA3'),
-                           choices),
-      options = list(maxOptions = 10))
+      selected = 'Gene name')
   })
   
   # observeEvent(input$identifier, {
@@ -77,10 +108,9 @@ server = function(input, output, session) {
   
   output$chromatogram_plot = renderPlot({
     withProgress(
-      plot_chromatograms(input$identifier,
+      plot_chromatograms(input$experiment,
+                         input$identifier,
                          input$values, 
-                         tidy,
-                         map = idmap,
                          mode = input$plot_mode,
                          log_transform = input$log_transform),
       message = 'Updating plot...'
@@ -93,9 +123,25 @@ server = function(input, output, session) {
       paste0(paste(names, collapse = "-"), ".csv")
     },
     content = function(file) {
-      map0 = filter(idmap, identifier == input$identifier, id %in% input$values)
-      chroms = filter(tidy, uniprot %in% map0$uniprot) %>%
-        left_join(map0, by = 'uniprot') %>%
+      # read the id map
+      accession = gsub(": .*$", "", input$experiment)
+      replicate = gsub("^.*: ", "", input$experiment)
+      idmap = readRDS(paste0("data/idmaps/", accession, "-", replicate, ".rds"))
+      # filter to the identifier in question
+      idmap %<>% filter(identifier == !!input$identifier)
+      
+      # read the chromatograms
+      chroms = readRDS(paste0("data/chromatograms/", accession, "-", replicate, 
+                              ".rds")) %>%
+        left_join(idmap, by = 'uniprot') %>%
+        drop_na(id)
+      # filter to the values in question
+      chroms %<>% filter(id %in% input$values)
+      # flag protein group AND query identifier value
+      chroms %<>%
+        mutate(group = paste0(protein_group, ' (', id, ')'))
+      # return 
+      chroms %<>% 
         distinct(accession, replicate, species, protein_group, identifier, id,
                  fraction, intensity)
       write.csv(chroms, file, row.names = F)
@@ -114,17 +160,29 @@ ui = navbarPage("CF-MS explorer",
                     sidebarPanel(
                       helpText("Visualize protein chromatograms from up to 206",
                                " CF-MS experiments.",
-                               "Specify an identifier (e.g., gene name or",
-                               " UniProt ID), then select the proteins in the",
-                               " combined dataset you would like to plot."),
-                      # Select identifier
+                               "Specify a CF-MS experiment and an identifier ",
+                               "(e.g., gene name or UniProt ID), then select ",
+                               "the proteins in the dataset you would",
+                               " like to plot."),
+                      
+                      # Select experiment
                       selectInput(
-                        inputId = 'identifier', 
-                        label = 'Identifier(s)', 
-                        choices = identifiers$identifier,
-                        selected = 'Gene name'),
+                        inputId = 'experiment', 
+                        label = 'Experiment', 
+                        choices = expts,
+                        selected = 'PXD001220: rep1'),
+                      
+                      # Select identifier
+                      uiOutput('choose_identifier'),
+                      # selectInput(
+                      #   inputId = 'identifier', 
+                      #   label = 'Identifiers', 
+                      #   choices = identifiers$identifier,
+                      #   selected = 'Gene name'),
+                      
                       # Select gene(s)
                       uiOutput('choose_values'),
+                      
                       # selectizeInput(
                       #   inputId = 'values', 
                       #   label = 'Protein(s)', 
@@ -145,7 +203,7 @@ ui = navbarPage("CF-MS explorer",
                       downloadButton("download_data", "Download data")
                     ),
                     mainPanel(
-                      plotOutput("chromatogram_plot", height = "1600px")
+                      plotOutput("chromatogram_plot", height = "400px")
                     )
                   )
                 ),

@@ -1,11 +1,33 @@
-plot_chromatograms = function(identifier, values, tidy, map,
+plot_chromatograms = function(experiment, identifier, values,
                               mode = c('Scatterplot', 'Heatmap'),
                               log_transform = FALSE) {
-  # subset the map
-  map0 = filter(map, identifier == !!identifier, id %in% values)
-  # link to chromatograms
-  chroms = filter(tidy, uniprot %in% map0$uniprot) %>%
-    left_join(map0, by = 'uniprot')
+  if (is.null(experiment) ||
+      is.null(identifier) ||
+      is.null(values))
+    return(ggplot())
+  if (length(values) == 0)
+    return(ggplot())
+  
+  # read the id map
+  accession = gsub(": .*$", "", experiment)
+  replicate = gsub("^.*: ", "", experiment)
+  idmap = readRDS(paste0("data/idmaps/", accession, "-", replicate, ".rds"))
+  # filter to the identifier in question
+  idmap %<>% filter(identifier == !!identifier)
+  if (nrow(idmap) == 0)
+    return(ggplot())
+  
+  # read the chromatograms
+  chroms = readRDS(paste0("data/chromatograms/", accession, "-", replicate, 
+                          ".rds")) %>%
+    left_join(idmap, by = 'uniprot') %>%
+    drop_na(id)
+  if (nrow(chroms) == 0)
+    return(ggplot())
+  # filter to the values in question
+  chroms %<>% filter(id %in% values)
+  if (nrow(chroms) == 0)
+    return(ggplot())
   # flag protein group AND query identifier value
   chroms %<>%
     mutate(group = paste0(protein_group, ' (', id, ')'))
@@ -19,8 +41,8 @@ plot_chromatograms = function(identifier, values, tidy, map,
     mutate(facet = paste0(accession, ": ", replicate, "\n", species))
   
   # plot 
-  size_sm = 6
-  size_lg = 7
+  size_sm = 9
+  size_lg = 10
   if (tolower(mode) == 'scatterplot') {
     pal = pals::polychrome(n = 36) %>% extract(-2) %>% unname()
     pal = pals::alphabet() %>% unname()
