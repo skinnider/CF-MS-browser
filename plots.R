@@ -1,7 +1,7 @@
-plot_chromatograms = function(experiment, identifier, values,
+plot_chromatograms = function(experiments, identifier, values,
                               mode = c('Scatterplot', 'Heatmap'),
                               log_transform = FALSE) {
-  if (is.null(experiment) ||
+  if (is.null(experiments) ||
       is.null(identifier) ||
       is.null(values))
     return(ggplot())
@@ -9,23 +9,25 @@ plot_chromatograms = function(experiment, identifier, values,
     return(ggplot())
   
   # read the id map
-  accession = gsub(": .*$", "", experiment)
-  replicate = gsub("^.*: ", "", experiment)
-  idmap = readRDS(paste0("data/idmaps/", accession, "-", replicate, ".rds"))
+  experiments %<>% gsub(" \\(.*$", "", .) ## strip fractionation
+  accessions = gsub(": .*$", "", experiments)
+  replicates = gsub("^.*: ", "", experiments)
+  idmap_files = paste0("data/idmaps/", accessions, "-", replicates, ".rds")
+  idmap = map(idmap_files, readRDS) %>% bind_rows()
   # filter to the identifier in question
-  idmap %<>% filter(identifier == !!identifier)
+  idmap %<>% filter(identifier == !!identifier) %>%
+    dplyr::select(-identifier)
   if (nrow(idmap) == 0)
     return(ggplot())
   
   # read the chromatograms
-  chroms = readRDS(paste0("data/chromatograms/", accession, "-", replicate, 
-                          ".rds")) %>%
-    left_join(idmap, by = 'uniprot') %>%
-    drop_na(id)
-  if (nrow(chroms) == 0)
-    return(ggplot())
-  # filter to the values in question
-  chroms %<>% filter(id %in% values)
+  chrom_files = paste0("data/chromatograms/", accessions, "-", replicates,
+                       ".rds")
+  chroms = map(chrom_files, ~ readRDS(.) %>%
+                 left_join(idmap, by = 'uniprot') %>%
+                 drop_na(id) %>%
+                 filter(id %in% values)) %>%
+    bind_rows()
   if (nrow(chroms) == 0)
     return(ggplot())
   # flag protein group AND query identifier value
@@ -38,17 +40,17 @@ plot_chromatograms = function(experiment, identifier, values,
   
   # create facets
   chroms %<>%
-    mutate(facet = paste0(accession, ": ", replicate, "\n", species))
+    mutate(facet = paste0(accession, ": ", replicate))
   
   # plot 
-  size_sm = 9
-  size_lg = 10
+  size_sm = 11
+  size_lg = 13
   if (tolower(mode) == 'scatterplot') {
     pal = pals::polychrome(n = 36) %>% extract(-2) %>% unname()
     pal = pals::alphabet() %>% unname()
     p = chroms %>%
       ggplot(aes(x = fraction, y = intensity, color = group)) +
-      facet_wrap(~ facet, ncol = 4, scales = 'free') +
+      facet_wrap(~ facet, ncol = 2, scales = 'free') +
       geom_point(size = 0.5) + 
       geom_line() +
       scale_color_manual('Protein group', values = pal) +
